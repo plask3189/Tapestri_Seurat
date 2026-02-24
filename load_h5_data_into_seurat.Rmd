@@ -1,4 +1,7 @@
 
+
+#Demonstrates the processing pipeline for one sample
+
 ```{r}
 library(rhdf5)
 library(Seurat)
@@ -58,8 +61,8 @@ isotype <- grep("IgG",rownames(protein_matrix),value=TRUE) # vector of isotype c
 dsb_norm <- dsb::DSBNormalizeProtein( # remove ambient protien noise reflected in counts from empty droplets
     cell_protein_matrix = protein_matrix, # cell-containing droplet raw protein count matrix
     empty_drop_matrix = empty_drops_matrix_input, # empty/background droplet raw protein count
-    denoise.counts = TRUE, # (default = TRUE); run step II
-    use.isotype.control = TRUE, # (default = TRUE): use isotype controls to define technical components.
+    denoise.counts = TRUE, 
+    use.isotype.control = TRUE, #  use isotype controls to define technical components.
     isotype.control.name.vec = isotype # isotype controls (IgG markers) to adjust for non-specific antibody binding
 )
 dsb_norm_assay <- CreateAssay5Object(counts = dsb_norm)
