@@ -1,2 +1,0 @@
-"0","FILE <- ""/Users/kateplas/Library/Mobile Documents/com~apple~CloudDocs/Documents/Miles_Lab/BRAF/Pt_H.dna+protein.h5"""
-"0","panel_extract<-rhdf5::h5read(FILE, ""/assays/dna_read_counts/metadata/panel_name"")[1]"

@@ -1,7 +1,0 @@
-"0","seurat_obj <- generate_seurat_object(FILE, variants_data_to_use)"
-"2","Warning:"
-"2"," Data is of class matrix. Coercing to dgCMatrix.
-"
-"2","Warning:"
-"2"," Data is of class matrix. Coercing to dgCMatrix.
-"

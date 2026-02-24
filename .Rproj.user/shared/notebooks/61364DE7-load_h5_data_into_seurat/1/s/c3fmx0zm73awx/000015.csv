@@ -1,5 +1,0 @@
-"0","variants_data<- get_variants_data(FILE, min_VAF_cutoff = 1, min_genotyping_rate = 85)"
-"0",""
-"0","ggplot(variants_data, aes(x = VAF)) +"
-"0","    geom_histogram(bins = 50, fill = ""steelblue"", color = ""white"") +"
-"0","    labs(title = ""Distribution of Variant Allele Frequency (VAF)"", x = ""VAF (%)"", y = ""Count"")"
