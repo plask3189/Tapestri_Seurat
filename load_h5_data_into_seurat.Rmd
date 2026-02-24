@@ -41,7 +41,7 @@ seurat_obj <- generate_seurat_object(FILE, variants_data_to_use)
 ```
 
 # Protein Normalization.
-We do this by comparing empty vs not cells, so we work with the all_barcodes section of the h5 file. 
+We do this by comparing empty vs not cells, so we work with the all_barcodes section of the h5 file which includes the empty cells rather than the assay section 
 
 ```{r}
 droplet_metadata<- get_all_droplet_data(FILE)
@@ -69,7 +69,6 @@ DefaultAssay(seurat_obj) <- "DSB_norm"
 
 
 ```{r}
-
 seurat_obj <- Seurat::ScaleData(seurat_obj,assay = "DSB_norm", layer = "counts")
 seurat_obj<- Seurat::RunPCA(seurat_obj, features = rownames(seurat_obj@assays[["DSB_norm"]]))
 seurat_obj<- FindNeighbors(object = seurat_obj, k.param = 30)
