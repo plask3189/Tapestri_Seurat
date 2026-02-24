@@ -1,0 +1,6 @@
+shiny::runApp('visualize_h5_structure')
+runApp('~/Downloads/app_1.R')
+runApp('visualize_h5_structure')
+# One-time install
+install.packages(c("shiny", "DT", "bslib"))
+BiocManager::install("rhdf5")   # if you have BiocManager, else: install.packages("BiocManager") first

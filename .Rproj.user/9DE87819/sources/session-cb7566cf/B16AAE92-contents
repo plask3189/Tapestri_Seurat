@@ -1,0 +1,155 @@
+
+
+#' extracts droplet-level DNA and protein read count data from an HDF5 file and constructs a metadata 
+#' table containing quality control metrics and droplet classification.
+get_all_droplet_data <- function(FILE){
+  barcodes    <- h5read(FILE, "assays/dna_variants/ra/barcode")
+  # all droplet data
+  all_protein_droplets <- rhdf5::h5read(file=FILE,name="/all_barcodes/protein_read_counts/layers/read_counts")
+  all_dna_droplets <- rhdf5::h5read(file=FILE,name="/all_barcodes/dna_read_counts/layers/read_counts")
+  colnames(all_dna_droplets) <-rhdf5::h5read(file=FILE,name="/all_barcodes/dna_read_counts/ra/barcode")
+  colnames(all_protein_droplets) <-rhdf5::h5read(file=FILE,name="/all_barcodes/protein_read_counts/ra/barcode")
+  # create a metadata dataframe of simple qc stats for each droplet
+  dna_size <- data.frame("Cell"=colnames(all_dna_droplets),
+                         "dna_size"=log10(Matrix::colSums(all_dna_droplets)),
+                         "amplicons"=Matrix::colSums(all_dna_droplets > 0))
+  protein_size <- data.frame("Cell"=colnames(all_protein_droplets),
+                             "proteins"=Matrix::colSums(all_protein_droplets > 0),
+                             "protein_size"=log10(Matrix::colSums(all_protein_droplets)))
+  md <- dplyr::inner_join(dna_size, protein_size) %>% dplyr::mutate(Cell=gsub("-1","",Cell))
+  md<- md %>% mutate(Droplet_type=case_when( Cell%in%barcodes~"Cell", TRUE~"Empty" ))
+  
+  group_droplet_metadata<-GetMembershipFaster(md) # computes comp1_prod""comp2_prod""sum_of_comps""comp1_post""comp2_post""positive_cell_calls"
+  group_droplet_metadata<-GetStainIndex(group_droplet_metadata) 
+  return(group_droplet_metadata)
+}
+
+
+
+GetMembershipFaster <- function(droplet_metadata) { # kp added
+  
+  library(data.table)
+  library(mvtnorm)
+  
+  setDT(droplet_metadata)  # convert to data.table
+  
+  # separates Cell and Empty droplet types
+  cell_data <- droplet_metadata[Droplet_type == "Cell", .(dna_size, protein_size)]
+  empty_data <- droplet_metadata[Droplet_type == "Empty", .(dna_size, protein_size)]
+  
+  Cell_cov_mat <- cov(cell_data)
+  Empty_cov_mat <- cov(empty_data)
+  
+  cell_mu_vec <- colMeans(cell_data)
+  empty_mu_vec <- colMeans(empty_data)
+  
+  comp1.prod <- dmvnorm(droplet_metadata[, .(dna_size, protein_size)], mean = cell_mu_vec, sigma = Cell_cov_mat)
+  comp2.prod <- dmvnorm(droplet_metadata[, .(dna_size, protein_size)], mean = empty_mu_vec, sigma = Empty_cov_mat)
+  
+  sum_of_comps <- comp1.prod + comp2.prod
+  droplet_metadata[, `:=`(
+    comp1_prod = comp1.prod,
+    comp2_prod = comp2.prod,
+    sum_of_comps = sum_of_comps,
+    comp1_post = comp1.prod / sum_of_comps,
+    comp2_post = comp2.prod / sum_of_comps,
+    positive_cell_calls = ifelse(comp1.prod > comp2.prod, "Cell", "Empty")
+  )]
+  
+  return(droplet_metadata)
+}
+
+
+GetStainIndex<-function(droplet_metadata){
+  #print("In stain function")
+  empty_med_vec<-droplet_metadata%>%
+    dplyr::filter(Droplet_type=="Empty")%>%
+    dplyr::select(dna_size,protein_size)%>%
+    dplyr::mutate(dna_median=median(dna_size),
+                  pro_median=median(protein_size))%>%
+    dplyr::select(dna_median,pro_median)%>%distinct
+  cell_med_vec<-droplet_metadata%>%
+    dplyr::filter(Droplet_type=="Cell")%>%
+    dplyr::select(dna_size,protein_size)%>%
+    dplyr::mutate(dna_median=median(dna_size),
+                  pro_median=median(protein_size))%>%
+    dplyr::select(dna_median,pro_median)%>%distinct
+  sd.mat3<-droplet_metadata%>%
+    dplyr::filter(Droplet_type=="Empty")%>%
+    dplyr::select(dna_size,protein_size)%>%
+    summarise(cov_mat=cov(.))%>%as.matrix
+  cell_ind_vec<-droplet_metadata%>%
+    dplyr::select(dna_size,protein_size)
+  
+  droplet_metadata<-cbind(droplet_metadata,
+                          as.matrix(sweep(as.matrix(cell_ind_vec),2,as.matrix(empty_med_vec)))%*%solve(2*(diag(diag(sd.mat3))**0.5)))
+  
+  colnames(droplet_metadata)[length(colnames(droplet_metadata))-1]<-"Stain_index_DNA_size"
+  colnames(droplet_metadata)[length(colnames(droplet_metadata))]<-"Stain_index_protein_size"
+  
+  return(droplet_metadata)
+  
+}
+
+
+GetMembership<-function(droplet_metadata){
+  #print("in membership")
+  Cell_cov_mat<-droplet_metadata%>%
+    dplyr::filter(Droplet_type=="Cell")%>%
+    dplyr::select(dna_size,protein_size)%>%
+    summarise(cov_mat=cov(.))%>%as.matrix
+  cell_mu_vec<-droplet_metadata%>%
+    dplyr::filter(Droplet_type=="Cell")%>%
+    dplyr::select(dna_size,protein_size)%>%
+    dplyr::mutate(dna_mean=mean(dna_size),
+                  pro_mean=mean(protein_size))%>%
+    dplyr::select(dna_mean,pro_mean)%>%distinct
+  
+  Empty_cov_mat<-droplet_metadata%>%
+    dplyr::filter(Droplet_type=="Empty")%>%
+    dplyr::select(dna_size,protein_size)%>%
+    summarise(cov_mat=cov(.))%>%as.matrix
+  empty_mu_vec<-droplet_metadata%>%
+    dplyr::filter(Droplet_type=="Empty")%>%
+    dplyr::select(dna_size,protein_size)%>%
+    dplyr::mutate(dna_mean=mean(dna_size),
+                  pro_mean=mean(protein_size))%>%
+    dplyr::select(dna_mean,pro_mean)%>%distinct
+  
+  mu.vector1 <-t(cell_mu_vec%>%as.matrix)
+  mu.vector1 <-mu.vector1[1:2]
+  mu.vector2<-t(empty_mu_vec%>%as.matrix)
+  mu.vector2 <-mu.vector2[1:2]
+  
+  #sd.mat1 <- diag(sd.mat[1:73,])
+  #sd.mat2 <-diag(sd.mat[74:146,])
+  sd.mat1 <- Cell_cov_mat
+  sd.mat2 <-Empty_cov_mat
+  
+  alpha.vector1 <-1#alpha.vector[1:73]
+  alpha.vector2 <-1#alpha.vector[74:146]
+  comp1.prod=matrix(data=NA_real_,nrow = dim(droplet_metadata)[1],ncol=1)
+  comp2.prod=matrix(data=NA_real_,nrow = dim(droplet_metadata)[1],ncol=1)
+  for(iter in 1:dim(droplet_metadata)[1]){
+    temp_df <-droplet_metadata[iter,c(2,5)]
+    comp1.prod[iter]<-mvtnorm::dmvnorm(x=temp_df,
+                                       mean=mu.vector1,
+                                       sigma=(sd.mat1))*alpha.vector1[1]
+    
+    comp2.prod[iter] <- mvtnorm::dmvnorm(x=temp_df,
+                                         mean=mu.vector2,
+                                         sigma=(sd.mat2))*alpha.vector2[1]
+    
+  }
+  droplet_metadata<-cbind(droplet_metadata,comp1.prod,comp2.prod)
+  droplet_metadata<-droplet_metadata%>%
+    dplyr::mutate(sum.of.comps=comp1.prod+comp2.prod,
+                  comp1.post= comp1.prod/sum.of.comps,
+                  comp2.post= comp2.prod/sum.of.comps)
+  
+  droplet_metadata<-droplet_metadata%>%
+    dplyr::mutate(positive_cell_calls=ifelse(comp1.post>comp2.post,"Cell","Empty"))
+  return(droplet_metadata)
+}
+
+

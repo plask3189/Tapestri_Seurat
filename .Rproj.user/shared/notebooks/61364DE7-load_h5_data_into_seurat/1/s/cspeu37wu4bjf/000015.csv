@@ -1,0 +1,5 @@
+"0","dsb_norm_assay <- CreateAssay5Object(counts = dsb_norm)
+"
+"2","Warning:"
+"2"," Data is of class matrix. Coercing to dgCMatrix.
+"

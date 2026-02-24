@@ -1,0 +1,474 @@
+# HDF5 Explorer — R Shiny
+# Install deps: install.packages(c("shiny", "rhdf5", "DT", "bslib", "jsonlite"))
+# BiocManager::install("rhdf5")
+# Run: shiny::runApp("app.R")
+
+library(shiny)
+library(rhdf5)
+library(DT)
+library(bslib)
+
+FILE <- "/Users/kateplas/Library/Mobile Documents/com~apple~CloudDocs/Documents/Miles_Lab/BRAF/Pt_H.dna+protein.h5"
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+fmt_bytes <- function(b) {
+  if (b < 1024)       return(paste0(b, " B"))
+  if (b < 1048576)    return(paste0(round(b/1024,    1), " KB"))
+  if (b < 1073741824) return(paste0(round(b/1048576, 1), " MB"))
+  return(paste0(round(b/1073741824, 2), " GB"))
+}
+
+# Walk h5 file into nested list for jsTree
+build_tree_nodes <- function(filepath) {
+  info  <- h5ls(filepath, all = TRUE)
+  nodes <- list()
+
+  for (i in seq_len(nrow(info))) {
+    row   <- info[i, ]
+    path  <- if (row$group == "/") paste0("/", row$name) else paste0(row$group, "/", row$name)
+    pid   <- if (row$group == "/") "#" else row$group
+    label <- row$name
+    is_ds <- row$otype == "H5I_DATASET"
+
+    shape_str <- ""
+    if (is_ds && nchar(row$dim) > 0) shape_str <- paste0("  [", gsub(" x ", "×", row$dim), "]")
+
+    nodes[[i]] <- list(
+      id     = path,
+      parent = pid,
+      text   = paste0(label, shape_str),
+      icon   = if (is_ds) "ds-icon" else "grp-icon",
+      li_attr = list(class = if (is_ds) "ds-node" else "grp-node"),
+      data   = list(is_ds = is_ds, path = path,
+                    dtype = if (is_ds) row$dclass else "",
+                    dim   = if (is_ds) row$dim    else "")
+    )
+  }
+  nodes
+}
+
+get_preview <- function(filepath, path, max_rows = 12, max_cols = 10) {
+  tryCatch({
+    info <- h5ls(filepath)
+    row  <- info[paste0(info$group, "/", info$name) == path |
+                 (info$group == "/" & paste0("/", info$name) == path), ]
+    if (nrow(row) == 0) return(list(kind = "error", msg = "Not found"))
+
+    is_ds <- row$otype[1] == "H5I_DATASET"
+    if (!is_ds) {
+      children <- info[info$group == path | (path == "/" & info$group == "/"), ]
+      return(list(kind = "group", name = basename(path),
+                  path = path, n_children = nrow(children),
+                  children = children$name))
+    }
+
+    dim_str <- row$dim[1]
+    dclass  <- row$dclass[1]
+
+    # Read a small slice
+    fid  <- H5Fopen(filepath, flags = "H5F_ACC_RDONLY")
+    did  <- H5Dopen(fid, path)
+    sp   <- H5Dget_space(did)
+    dims <- H5Sget_simple_extent_dims(sp)$size
+
+    n_dims <- length(dims)
+    nbytes <- prod(dims) * H5Tget_size(H5Dget_type(did))
+
+    if (n_dims == 0) {
+      val <- H5Dread(did)
+      H5Dclose(did); H5Fclose(fid)
+      return(list(kind = "scalar", value = as.character(val),
+                  dtype = dclass, bytes = nbytes, shape = c()))
+    }
+
+    if (dclass %in% c("STRING")) {
+      n   <- min(50, dims[1])
+      val <- H5Dread(did)[seq_len(n)]
+      H5Dclose(did); H5Fclose(fid)
+      return(list(kind = "strings", values = as.character(val),
+                  dtype = dclass, bytes = nbytes, shape = dims))
+    }
+
+    # Numeric
+    if (n_dims == 1) {
+      n   <- min(200, dims[1])
+      idx <- sort(sample(dims[1], n))
+      # h5read with index
+      val <- h5read(filepath, path, index = list(idx))
+      H5Dclose(did); H5Fclose(fid)
+      stats <- list(min = min(val, na.rm=T), max = max(val, na.rm=T),
+                    mean = mean(val, na.rm=T), median = median(val, na.rm=T))
+      return(list(kind = "1d", values = as.numeric(val),
+                  stats = stats, dtype = dclass, bytes = nbytes, shape = dims))
+    }
+
+    if (n_dims == 2) {
+      r    <- min(max_rows, dims[1])
+      c_   <- min(max_cols, dims[2])
+      ridx <- sort(sample(dims[1], r))
+      mat  <- h5read(filepath, path, index = list(ridx, seq_len(c_)))
+      # stats on larger sample
+      r2   <- min(500, dims[1])
+      ridx2 <- sort(sample(dims[1], r2))
+      samp  <- h5read(filepath, path, index = list(ridx2, seq_len(min(50, dims[2]))))
+      stats <- list(min = min(samp, na.rm=T), max = max(samp, na.rm=T),
+                    mean = mean(samp, na.rm=T), median = median(as.vector(samp), na.rm=T))
+      H5Dclose(did); H5Fclose(fid)
+      df <- as.data.frame(mat)
+      colnames(df) <- paste0("col_", seq_len(ncol(df)))
+      return(list(kind = "2d", data = df, stats = stats,
+                  rows_total = dims[1], cols_total = dims[2],
+                  rows_shown = r, cols_shown = c_,
+                  dtype = dclass, bytes = nbytes, shape = dims))
+    }
+
+    # ND: show 2-D slice of last two dims
+    mid   <- ceiling(dims[-c(length(dims)-1, length(dims))] / 2)
+    idx_l <- c(as.list(mid), list(seq_len(min(max_rows, dims[length(dims)-1])),
+                                   seq_len(min(max_cols, dims[length(dims)]))))
+    sl    <- h5read(filepath, path, index = idx_l)
+    H5Dclose(did); H5Fclose(fid)
+    df <- as.data.frame(sl)
+    colnames(df) <- paste0("col_", seq_len(ncol(df)))
+    return(list(kind = "nd_slice", data = df, slice_at = mid,
+                dtype = dclass, bytes = nbytes, shape = dims))
+
+  }, error = function(e) {
+    list(kind = "error", msg = conditionMessage(e))
+  })
+}
+
+# ── UI ────────────────────────────────────────────────────────────────────────
+
+ui <- page_fillable(
+  theme = bs_theme(
+    bg            = "#080c10",
+    fg            = "#cdd9e5",
+    primary       = "#58a6ff",
+    secondary     = "#3fb950",
+    base_font     = font_google("JetBrains Mono"),
+    heading_font  = font_google("Syne"),
+    "font-size-base" = "13px",
+    bootswatch    = "darkly"
+  ),
+
+  tags$head(tags$style(HTML("
+    body, .bslib-page-fill { background:#080c10 !important; }
+
+    /* ── Header ── */
+    .app-header {
+      background:#0d1117; border-bottom:1px solid #1e2633;
+      padding:12px 24px; display:flex; align-items:center; gap:14px;
+      flex-shrink:0;
+    }
+    .app-header h4 { font-family:'Syne',sans-serif; font-weight:800;
+      color:#58a6ff; margin:0; font-size:16px; }
+    .app-header .sub { color:#545d68; font-size:11px; }
+    .node-count { background:#182030; border:1px solid #1e2633;
+      border-radius:4px; padding:2px 9px; font-size:10px; color:#545d68; }
+
+    /* ── Panels ── */
+    .tree-panel {
+      background:#0d1117; border-right:1px solid #1e2633;
+      overflow-y:auto; padding:8px 0; width:360px; flex-shrink:0;
+    }
+    .preview-panel { background:#080c10; overflow-y:auto; padding:24px 28px; flex:1; }
+
+    /* ── jsTree custom theme ── */
+    .jstree-default .jstree-anchor { color:#cdd9e5 !important; font-size:12px;
+      font-family:'JetBrains Mono',monospace; }
+    .jstree-default .jstree-hovered { background:#131c26 !important;
+      border-radius:4px !important; }
+    .jstree-default .jstree-clicked { background:#132040 !important;
+      border-radius:4px !important; }
+    .grp-icon::before { content:'⬡'; color:#4fa3e8 !important; font-style:normal; }
+    .ds-icon::before  { content:'▪'; color:#3fb950 !important; font-style:normal; }
+    .jstree-icon { font-style:normal !important; }
+
+    /* ── Search ── */
+    #node_search { background:#0d1117; border:1px solid #1e2633;
+      border-radius:6px; color:#cdd9e5; font-family:'JetBrains Mono',monospace;
+      font-size:12px; padding:5px 10px; width:100%; outline:none;
+      transition:border-color .15s; }
+    #node_search:focus { border-color:#58a6ff; }
+    .search-wrap { padding:8px 12px 4px; }
+
+    /* ── Preview components ── */
+    .preview-title { font-family:'Syne',sans-serif; font-weight:700;
+      color:#58a6ff; font-size:15px; margin-bottom:4px; }
+    .preview-path { color:#545d68; font-size:11px; margin-bottom:16px;
+      padding-bottom:14px; border-bottom:1px solid #1e2633; }
+    .meta-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+      gap:10px; margin-bottom:20px; }
+    .meta-card { background:#0d1117; border:1px solid #1e2633; border-radius:8px;
+      padding:10px 14px; }
+    .meta-card .key { font-size:10px; color:#545d68; margin-bottom:4px;
+      text-transform:uppercase; letter-spacing:.5px; }
+    .meta-card .val { font-size:13px; color:#cdd9e5; font-weight:600; }
+    .section-title { font-family:'Syne',sans-serif; font-size:11px; font-weight:700;
+      color:#545d68; text-transform:uppercase; letter-spacing:1px; margin-bottom:10px; }
+    .stats-row { display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
+    .stat-pill { background:#182030; border:1px solid #1e2633; border-radius:20px;
+      padding:4px 14px; font-size:11px; color:#cdd9e5; }
+    .stat-pill .lbl { color:#c9921a; margin-right:4px; }
+    .str-grid { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:18px; }
+    .str-chip { background:#0d1117; border:1px solid #1e2633; border-radius:4px;
+      padding:3px 10px; font-size:11px; color:#3fb950; }
+    .chip-grp { color:#4fa3e8 !important; }
+
+    /* ── Sparkline ── */
+    .spark-wrap { display:flex; align-items:flex-end; gap:2px;
+      height:60px; margin-bottom:18px; flex-wrap:wrap; }
+    .spark-bar { flex:1; min-width:3px; max-width:16px; background:#58a6ff;
+      opacity:.7; border-radius:2px 2px 0 0; transition:opacity .1s; cursor:default; }
+    .spark-bar:hover { opacity:1; }
+
+    /* ── DT table styling ── */
+    .dataTables_wrapper { background:transparent !important; }
+    table.dataTable { background:#0d1117 !important; color:#cdd9e5 !important;
+      font-size:12px; font-family:'JetBrains Mono',monospace; border:none !important; }
+    table.dataTable thead th { background:#0d1520 !important; color:#c9921a !important;
+      border-bottom:1px solid #1e2633 !important; font-size:10px; text-transform:uppercase;
+      letter-spacing:.4px; }
+    table.dataTable tbody tr { background:#0d1117 !important; }
+    table.dataTable tbody tr:hover { background:#131c26 !important; }
+    table.dataTable tbody td { border-bottom:1px solid #111820 !important; }
+    .dataTables_info, .dataTables_filter label, .dataTables_length label { color:#545d68 !important; font-size:11px; }
+    .dataTables_filter input { background:#0d1117 !important; border:1px solid #1e2633 !important;
+      color:#cdd9e5 !important; border-radius:4px; padding:3px 7px; font-size:11px; }
+    .paginate_button { color:#545d68 !important; background:transparent !important;
+      border:none !important; font-size:11px; }
+    .paginate_button.current { color:#58a6ff !important; }
+    .truncate-note { font-size:10px; color:#545d68; margin-top:6px; }
+
+    /* ── Placeholder ── */
+    .placeholder { display:flex; flex-direction:column; align-items:center;
+      justify-content:center; height:80%; color:#545d68; gap:10px; }
+    .placeholder .big { font-size:48px; }
+
+    ::-webkit-scrollbar { width:5px; height:5px; }
+    ::-webkit-scrollbar-track { background:transparent; }
+    ::-webkit-scrollbar-thumb { background:#2a3240; border-radius:3px; }
+  "))),
+
+  # jsTree
+  tags$head(
+    tags$link(rel="stylesheet",
+      href="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.16/themes/default/style.min.css"),
+    tags$script(src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"),
+    tags$script(src="https://cdnjs.cloudflare.com/ajax/libs/jstree/3.3.16/jstree.min.js")
+  ),
+
+  # Layout
+  div(style="display:flex; flex-direction:column; height:100vh; overflow:hidden;",
+
+    # Header
+    div(class="app-header",
+      div(
+        tags$h4("HDF5 Explorer"),
+        div(class="sub", FILE)
+      ),
+      div(class="node-count", id="node_count_badge", "loading…")
+    ),
+
+    # Body
+    div(style="display:flex; flex:1; overflow:hidden;",
+
+      # Tree panel
+      div(class="tree-panel",
+        div(class="search-wrap",
+          tags$input(id="node_search", type="text", placeholder="⌕  Search nodes…")
+        ),
+        div(id="jstree_div")
+      ),
+
+      # Preview panel
+      div(class="preview-panel",
+        uiOutput("preview_ui")
+      )
+    )
+  ),
+
+  # JS: build jsTree + wire up selection
+  tags$script(HTML("
+    Shiny.addCustomMessageHandler('build_tree', function(nodes) {
+      document.getElementById('node_count_badge').textContent = nodes.length + ' nodes';
+
+      $('#jstree_div').jstree('destroy');
+      $('#jstree_div').jstree({
+        core: {
+          data: nodes,
+          themes: { name: 'default', dots: true, icons: true, stripes: false }
+        },
+        plugins: ['search', 'wholerow']
+      });
+
+      $('#jstree_div').on('select_node.jstree', function(e, data) {
+        Shiny.setInputValue('selected_path', data.node.data.path, {priority:'event'});
+      });
+
+      // search
+      var searchTimeout;
+      document.getElementById('node_search').addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        var q = this.value;
+        searchTimeout = setTimeout(function() {
+          $('#jstree_div').jstree(true).search(q);
+        }, 200);
+      });
+    });
+  "))
+)
+
+# ── Server ────────────────────────────────────────────────────────────────────
+
+server <- function(input, output, session) {
+
+  # Build tree on startup
+  observe({
+    nodes <- build_tree_nodes(FILE)
+    # Convert to jsTree format
+    jsnodes <- lapply(nodes, function(n) {
+      list(
+        id     = n$id,
+        parent = n$parent,
+        text   = n$text,
+        icon   = n$icon,
+        data   = n$data,
+        state  = list(opened = n$parent == "#")
+      )
+    })
+    session$sendCustomMessage("build_tree", jsnodes)
+  })
+
+  # Preview
+  output$preview_ui <- renderUI({
+    path <- input$selected_path
+    if (is.null(path) || path == "") {
+      return(div(class="placeholder",
+        div(class="big", "⬡"),
+        div("Click any node to preview its data")
+      ))
+    }
+
+    p <- get_preview(FILE, path)
+
+    if (p$kind == "error") {
+      return(div(class="preview-title", style="color:#f78166", "Error: ", p$msg))
+    }
+
+    name <- basename(path)
+
+    header <- div(
+      div(class="preview-title", name),
+      div(class="preview-path", path)
+    )
+
+    if (p$kind == "group") {
+      chips <- lapply(p$children, function(c) {
+        span(class="str-chip chip-grp", paste0("⬡ ", c))
+      })
+      return(tagList(
+        header,
+        div(class="meta-grid",
+          div(class="meta-card", div(class="key","Type"),    div(class="val","Group")),
+          div(class="meta-card", div(class="key","Children"),div(class="val", p$n_children))
+        ),
+        div(class="section-title", "Children"),
+        do.call(div, c(list(class="str-grid"), chips))
+      ))
+    }
+
+    meta <- div(class="meta-grid",
+      div(class="meta-card", div(class="key","Shape"),
+          div(class="val", if (length(p$shape)==0) "scalar" else paste(p$shape, collapse=" × "))),
+      div(class="meta-card", div(class="key","dtype"),  div(class="val", p$dtype)),
+      div(class="meta-card", div(class="key","Size"),   div(class="val", fmt_bytes(p$bytes))),
+      div(class="meta-card", div(class="key","Kind"),   div(class="val", p$kind))
+    )
+
+    if (p$kind == "scalar") {
+      return(tagList(header, meta,
+        div(class="section-title","Value"),
+        span(class="str-chip", style="color:#cdd9e5; font-size:14px;", p$value)
+      ))
+    }
+
+    if (p$kind == "strings") {
+      chips <- lapply(head(p$values, 60), function(v) span(class="str-chip", v))
+      return(tagList(header, meta,
+        div(class="section-title", paste0("Values (first ", length(chips), ")")),
+        do.call(div, c(list(class="str-grid"), chips))
+      ))
+    }
+
+    if (p$kind == "1d") {
+      vals  <- p$values
+      mn    <- min(vals, na.rm=T); mx <- max(vals, na.rm=T); rng <- max(mx - mn, 1e-9)
+      bars  <- lapply(vals, function(v) {
+        h <- max(4, round(((v - mn) / rng) * 55))
+        div(class="spark-bar", style=paste0("height:",h,"px"), title=round(v,5))
+      })
+      stats_row <- div(class="stats-row",
+        div(class="stat-pill", span(class="lbl","min"),    round(p$stats$min,4)),
+        div(class="stat-pill", span(class="lbl","max"),    round(p$stats$max,4)),
+        div(class="stat-pill", span(class="lbl","mean"),   round(p$stats$mean,4)),
+        div(class="stat-pill", span(class="lbl","median"), round(p$stats$median,4))
+      )
+      chips <- lapply(head(vals, 60), function(v) span(class="str-chip", style="color:#cdd9e5;", round(v,5)))
+      return(tagList(header, meta, stats_row,
+        div(class="section-title", paste0("Distribution (", length(vals), " samples)")),
+        do.call(div, c(list(class="spark-wrap"), bars)),
+        div(class="section-title","Raw values"),
+        do.call(div, c(list(class="str-grid"), chips))
+      ))
+    }
+
+    if (p$kind %in% c("2d", "nd_slice")) {
+      stats_row <- NULL
+      if (!is.null(p$stats)) {
+        stats_row <- div(class="stats-row",
+          div(class="stat-pill", span(class="lbl","min"),    round(p$stats$min,4)),
+          div(class="stat-pill", span(class="lbl","max"),    round(p$stats$max,4)),
+          div(class="stat-pill", span(class="lbl","mean"),   round(p$stats$mean,4)),
+          div(class="stat-pill", span(class="lbl","median"), round(p$stats$median,4))
+        )
+      }
+      slice_note <- if (p$kind == "nd_slice")
+        div(class="section-title", paste0("2D slice at dims: [", paste(p$slice_at, collapse=","), "]"))
+      else
+        div(class="section-title", paste0("Preview — ", p$rows_shown, " rows × ", p$cols_shown, " cols"))
+
+      tbl <- DTOutput("preview_table")
+      note <- if (!is.null(p$rows_shown))
+        div(class="truncate-note",
+            paste0("Showing ", p$rows_shown, " of ", p$rows_total,
+                   " rows, ", p$cols_shown, " of ", p$cols_total, " cols (random sample)"))
+      else NULL
+
+      return(tagList(header, meta, stats_row, slice_note, tbl, note))
+    }
+  })
+
+  output$preview_table <- renderDT({
+    path <- input$selected_path
+    if (is.null(path)) return(NULL)
+    p <- get_preview(FILE, path)
+    if (!p$kind %in% c("2d","nd_slice") || is.null(p$data)) return(NULL)
+    datatable(p$data,
+      options = list(
+        pageLength   = 10,
+        scrollX      = TRUE,
+        dom          = 'ftp',
+        initComplete = JS("function(settings,json){
+          $(this.api().table().header()).css({'background-color':'#0d1520','color':'#c9921a'});
+        }")
+      ),
+      rownames = TRUE,
+      class    = "compact hover"
+    )
+  })
+}
+
+shinyApp(ui, server)
