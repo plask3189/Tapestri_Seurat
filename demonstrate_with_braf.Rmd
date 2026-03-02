@@ -1,0 +1,16 @@
+
+
+
+
+```{r}
+og_braf<- readRDS("/Users/kateplas/Library/Mobile Documents/com~apple~CloudDocs/Documents/Miles_Lab/BRAF_Analysis_ARCHIVE/scDNA copy/just_braf_cohort_sce_subset_n7_v2_SEURAT.rds")
+```
+
+```{r}
+
+og_braf@assays[["Protein"]]
+
+
+seurat_merged@assays[["OG_P"]] <- 
+```
+

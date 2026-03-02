@@ -40,6 +40,7 @@ generate_seurat_object<- function(FILE, variants_data_to_use){
   LayerData(seurat_obj, assay = "NGT", layer = "GQ") <- GQ
   sample_name<- unique(h5read(FILE, "assays/dna_read_counts/ra/sample_name"))
   seurat_obj <- AddMetaData(seurat_obj, sample_name, col.name = "sample_name")
+  seurat_obj <- AddMetaData(seurat_obj, FILE, col.name = "file_path")
   variants_data_to_use$Gene <- sub("\\..*", "", variants_data_to_use$AA_change)
   seurat_obj <- AddMetaData(seurat_obj, variants_data_to_use$Gene, col.name = "Gene")
   

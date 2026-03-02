@@ -1,0 +1,22 @@
+
+First change name of file to anonymous name. then this will go into h5 files and change wherever the original sample name was stored 
+
+
+```{r}
+library(rhdf5)
+source("Anonymize_h5_files/replace_ids.R")
+
+FILES<- c("../BRAF/Pt_H.dna+protein.h5",
+          "../BRAF/Pt_J.dna+protein.h5",
+          "../BRAF/Pt_I.dna+protein.h5",
+          "../BRAF/Pt_A.dna+protein.h5",
+          "../BRAF/Pt_F.dna+protein.h5",
+          "../BRAF/Pt_K.dna+protein.h5",
+          "../BRAF/Pt_G.dna+protein.h5"
+          )
+
+for(file_path in FILES){
+  remove_file_ids(file_path)
+}
+```
+

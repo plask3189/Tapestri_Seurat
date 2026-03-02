@@ -6,7 +6,7 @@ library(shiny)
 library(rhdf5)
 library(DT)
 
-FILE <- "/Users/kateplas/Library/Mobile Documents/com~apple~CloudDocs/Documents/Miles_Lab/BRAF/Pt_H.dna+protein.h5"
+FILE <- "/Users/kateplas/Library/Mobile Documents/com~apple~CloudDocs/Documents/Miles_Lab/BRAF/Pt_K.dna+protein.h5"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

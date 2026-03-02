@@ -77,7 +77,7 @@ GetStainIndex<-function(droplet_metadata){
   sd.mat3<-droplet_metadata%>%
     dplyr::filter(Droplet_type=="Empty")%>%
     dplyr::select(dna_size,protein_size)%>%
-    summarise(cov_mat=cov(.))%>%as.matrix
+    reframe(cov_mat=cov(.))%>%as.matrix
   cell_ind_vec<-droplet_metadata%>%
     dplyr::select(dna_size,protein_size)
   
@@ -97,7 +97,7 @@ GetMembership<-function(droplet_metadata){
   Cell_cov_mat<-droplet_metadata%>%
     dplyr::filter(Droplet_type=="Cell")%>%
     dplyr::select(dna_size,protein_size)%>%
-    summarise(cov_mat=cov(.))%>%as.matrix
+    reframe(cov_mat=cov(.))%>%as.matrix
   cell_mu_vec<-droplet_metadata%>%
     dplyr::filter(Droplet_type=="Cell")%>%
     dplyr::select(dna_size,protein_size)%>%
@@ -108,7 +108,7 @@ GetMembership<-function(droplet_metadata){
   Empty_cov_mat<-droplet_metadata%>%
     dplyr::filter(Droplet_type=="Empty")%>%
     dplyr::select(dna_size,protein_size)%>%
-    summarise(cov_mat=cov(.))%>%as.matrix
+    reframe(cov_mat=cov(.))%>%as.matrix
   empty_mu_vec<-droplet_metadata%>%
     dplyr::filter(Droplet_type=="Empty")%>%
     dplyr::select(dna_size,protein_size)%>%
